@@ -1,6 +1,6 @@
 # Recipe-API
 
-**Recipe-API** is a Django REST Framework application that provides a simple, robust API for managing recipes, ingredients, categories, and user interactions.
+**Recipe-API** is a Django REST Framework  application that provides a simple, robust API for managing recipes, ingredients, categories, and user interactions.
 
 ## Features
 
