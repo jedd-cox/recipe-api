@@ -20,7 +20,7 @@ llm = OpenAI(
     api_base=os.getenv("OPENAI_BASE_URL"),
 )
 
-
+print("testing prs")
 if git is not None:
     repo = git.get_repo(full_repo_name)
     file_content = repo.get_contents("main.py").decoded_content.decode('utf-8')
