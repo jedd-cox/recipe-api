@@ -22,7 +22,7 @@ username = repo_url.split('/')[-2]
 full_repo_name = f"{username}/{repo_name}"
 
 llm = OpenAI(
-    model=os.getenv("OPENAI_MODEL"),
+    model='gpt-4o-mini',
     api_key=os.getenv("OPENAI_API_KEY"),
     api_base=os.getenv("OPENAI_BASE_URL"),
 )
