@@ -67,7 +67,7 @@ def get_changed_files(head_sha: str):
 changed_files_tool = FunctionTool.from_defaults(
     get_changed_files,
     name="get_changed_files_tool",
-    description="Get the changed files in a commit by its head SHA. This is useful for understanding which files were modified in a pull request and the nature of those changes (additions, deletions, etc.).",
+    description="Get the commit details of a specific commit based on the SHA.",
 )
 
 
@@ -245,13 +245,21 @@ get_pr_details_tool = FunctionTool.from_defaults(
 context_agent = FunctionAgent(
     llm=llm,
     name="ContextAgent",
-    description="Gathers needed context from a repository such as PR details (especially the title), changed files, file contents, and commit details. ",
+    description="Gathers context from a repository: PR details, changed files, file contents, and commit details.",
     system_prompt="""
-    You are the context gathering agent. When gathering context, you MUST gather \n: 
-  - The details: author, title, body, diff_url, state, and head_sha; \n
-  - Changed files; \n
-  - Any requested for files; \n
-Once you gather the requested info, you MUST hand control back to the Commentor Agent. 
+You are the context gathering agent.
+
+IMPORTANT: You MUST use tools - never just respond with text.
+
+When gathering context for a PR review, you MUST:
+1. Use get_pr_details_tool to get: author, title, body, diff_url, state, and commit SHAs
+2. Use get_changed_files_tool with the head commit SHA to get the diff/patch for each changed file
+3. Use get_file_content_tool if you need full file contents for context
+4. Use add_context_to_state_tool to save all gathered context
+
+Once you have gathered all needed information and saved it to state, hand off back to CommentorAgent.
+
+NEVER respond with just text - ALWAYS use a tool or handoff.
     """,
     tools=[changed_files_tool, get_pr_details_tool, get_pr_list_tool, get_file_content_tool, add_context_to_state_tool],
     can_handoff_to=["CommentorAgent"]
@@ -260,20 +268,26 @@ Once you gather the requested info, you MUST hand control back to the Commentor 
 commentor_agent = FunctionAgent(
     llm=llm,
     name="CommentorAgent",
-    description="""
-    You are the commentor agent that writes review comments for pull requests as a human reviewer would. \n 
-Ensure to do the following for a thorough review: 
- - Request for the PR details, changed files, and any other repo files you may need from the ContextAgent. 
- - Once you have asked for all the needed information, write a good ~200-300 word review in markdown format detailing: \n
-    - What is good about the PR? \n
-    - Did the author follow ALL contribution rules? What is missing? \n
-    - Are there tests for new functionality? If there are new models, are there migrations for them? - use the diff to determine this. \n
-    - Are new endpoints documented? - use the diff to determine this. \n 
-    - Which lines could be improved upon? Quote these lines and offer suggestions the author could implement. \n
- - If you need any additional files, you must hand off to the Context Agent and retrieve the file.. \n
- - You should directly address the author. So your comments should sound like: \n
- - You must hand off to the ReviewAndPostingAgent once you are done drafting a review. \n
- "Thanks for fixing this. I think all places where we call quote should be fixed. Can you roll this fix out everywhere?""",
+    description="Writes review comments for pull requests. Must gather context first via ContextAgent before writing.",
+    system_prompt="""
+You are the commentor agent that writes review comments for pull requests as a human reviewer would.
+
+IMPORTANT: You MUST use tools - never just respond with text saying you'll do something.
+
+Your workflow:
+1. FIRST: If you don't have PR details, changed files, or needed context, you MUST immediately hand off to ContextAgent to gather this information. Do NOT respond with text - use the handoff tool.
+2. THEN: Once you have all context, write a ~200-300 word review in markdown format covering:
+   - What is good about the PR
+   - Did the author follow ALL contribution rules? What is missing?
+   - Are there tests for new functionality? If there are new models, are there migrations?
+   - Are new endpoints documented?
+   - Which lines could be improved? Quote these lines and offer suggestions.
+3. FINALLY: Use add_comment_to_state_tool to save your draft, then hand off to ReviewAndPostingAgent.
+
+Address the author directly in your review. Example tone: "Thanks for fixing this. I think all places where we call quote should be fixed. Can you roll this fix out everywhere?"
+
+NEVER respond with just text like "please wait" or "I'll gather information" - ALWAYS use a tool or handoff.
+    """,
     tools=[add_draft_comment_to_state_tool],
     can_handoff_to=["ContextAgent", "ReviewAndPostingAgent"]
 )
@@ -281,19 +295,25 @@ Ensure to do the following for a thorough review:
 review_and_poster_agent = FunctionAgent(
     llm=llm,
     name="ReviewAndPostingAgent",
-    description="Uses the tools needed to review a pull request and post a comment on GitHub. This includes using the CommentorAgent to create a review comment, running a final check to ensure the review meets the criteria, and posting the review to GitHub.",
+    description="Reviews and posts PR comments to GitHub. Coordinates with CommentorAgent to create reviews.",
     system_prompt="""
-    You are the Review and Posting agent. You must use the CommentorAgent to create a review comment. 
-Once a review is generated, you need to run a final check and post it to GitHub.
-   - The review must: \n
-   - Be a ~200-300 word review in markdown format. \n
-   - Specify what is good about the PR: \n
-   - Did the author follow ALL contribution rules? What is missing? \n
-   - Are there notes on test availability for new functionality? If there are new models, are there migrations for them? \n
-   - Are there notes on whether new endpoints were documented? \n
-   - Are there suggestions on which lines could be improved upon? Are these lines quoted? \n
- If the review does not meet this criteria, you must ask the CommentorAgent to rewrite and address these concerns. \n
- When you are satisfied, post the review to GitHub.  
+You are the Review and Posting agent. 
+
+IMPORTANT: You MUST use tools - never just respond with text saying you'll do something.
+
+Your workflow:
+1. FIRST: Hand off to CommentorAgent to create a review comment. Use the handoff tool immediately.
+2. THEN: Once you receive a draft review, verify it meets these criteria:
+   - Is ~200-300 words in markdown format
+   - Specifies what is good about the PR
+   - Notes if author followed contribution rules
+   - Comments on test availability for new functionality
+   - Notes on whether new endpoints were documented
+   - Includes suggestions with quoted lines for improvements
+3. If the review doesn't meet criteria, hand back to CommentorAgent to rewrite.
+4. FINALLY: When satisfied, use post_pr_comment_tool to post the review to GitHub, then use add_final_comment_to_state_tool to save it.
+
+NEVER respond with just text like "please wait" or "handing off" - ALWAYS use a tool or handoff.
     """,
     tools=[post_pr_comment_tool, add_final_comment_to_state_tool],
     can_handoff_to=["CommentorAgent"]
@@ -323,14 +343,16 @@ async def main():
             current_agent = event.current_agent_name
             print(f"Current agent: {current_agent}")
         elif isinstance(event, AgentOutput):
-            if event.response.content:
-                print("\\n\\nFinal response:", event.response.content)
             if event.tool_calls:
                 print("Selected tools: ", [call.tool_name for call in event.tool_calls])
         elif isinstance(event, ToolCallResult):
             print(f"Output from tool: {event.tool_output}")
         elif isinstance(event, ToolCall):
             print(f"Calling selected tool: {event.tool_name}, with arguments: {event.tool_kwargs}")
+
+    # Get the actual final result after all events are processed
+    final_result = await handler
+    print("\n\nFinal response:", final_result.response.content)
 
 
 if __name__ == "__main__":
